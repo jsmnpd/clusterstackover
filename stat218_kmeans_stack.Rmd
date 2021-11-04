@@ -1,0 +1,264 @@
+---
+title: "STAT 218 - Cluster Analysis"
+author: "Jasmin Paed"
+output:
+  pdf_document:
+    number_sections: yes
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+library (dplyr)
+library(readr)
+library(stringr)
+#library(tidyverse)
+library(tibble)
+library(knitr)
+library(factoextra)
+#library(caTools)
+library(cluster)
+library(lubridate)
+library(ggplot2)
+#library(plotly)
+library(purrr)
+library(dendextend)
+```
+
+
+  Unsupervised clustering is commonly used in customer segmentation to uncover nontrivial groupings behind a wide range of data. In this study, we'll use the survey result of StackOverflow users conducted last 2018 to create clusters and uncover hidden insights using multivariate unsupervised clustering algorithms. We have the following goals in mind:  
+  
+1. Find the "best" method in forming clusters  
+2. Describe and interpret the clusters formed  
+3. Provide conclusions that can be derived from the results  
+
+
+## Data Exploration
+First, we want to have a good look of the raw data that we'll use.  
+```{r exp} 
+stack_data_finx <- read_csv("~/Documents/STAT218/phase2/stackoverflow/survey_results_public.csv")
+dim(stack_data_finx)
+
+```
+
+  From above, we see that we have 129 columns. Most columns will not be included in this study for the ff reasons:  
+1. Redundant fields (i.e. ConvertedSalary will be retained and Currency, Salary, SalaryType will be removed)  
+2. Too many possible answers / Too many dummy variables to produce (e.g. Country field)   
+3. Character fields (e.g. reasons/explanation fields)   
+4. Questions that can be left blank. Since fill rate tends to be low.    
+   
+  Hence, for the purpose of keeping the study simple, we will only use demographics data with less than 3 categories and delete rows with NA values. We would also focus on student respondents to get an idea of what an early career in coding looks like.   
+```{r, warning=FALSE}
+stack_data_fin<-select(stack_data_finx, c(Hobby, OpenSource, Student, Employment, FormalEducation, Respondent,YearsCoding, ConvertedSalary, Dependents))
+stack_data_fin <- stack_data_fin %>% distinct() %>% 
+  mutate(Hobby=ifelse(trimws(Hobby)=="Yes",1,0),
+         OpenSource=ifelse(trimws(OpenSource)=="Yes",1,0),
+         Student=case_when(str_detect(Student,"Yes") ~ 1, TRUE~0),
+         Employment=case_when(str_detect(Employment,"Not") ~ 0, 
+                              str_detect(Employment,"mployed") ~ 1,
+                              TRUE~0),
+         FormalEducation=case_when(str_detect(FormalEducation,"without") ~ 0, 
+                              str_detect(FormalEducation,"degree") ~ 1,
+                              str_detect(FormalEducation,"") ~ 1,
+                              TRUE~0),
+         YearsCoding=case_when(str_detect(YearsCoding,"30") ~ 30,
+                               str_detect(YearsCoding,"0-2") ~ 1,
+                               is.na(YearsCoding)~ 0,
+                               TRUE~as.numeric(sub("-.*","",YearsCoding))),
+         ConvertedSalary=ifelse(is.na(ConvertedSalary),0,ConvertedSalary),
+         Dependents=ifelse(Dependents=="Yes", 1, 0)) %>% 
+  filter(Student==1 ) %>% select(-c(Student)) %>% na.omit()
+
+stack_data_fin <- column_to_rownames(stack_data_fin, var="Respondent")
+rm(stack_data_finx)
+
+stack_data_fin %>% head() %>% knitr::kable()
+str(stack_data_fin)
+```
+
+  After cleaning and preparing the data to be suitable for clustering, we would now proceed with building the model. Note that we will scale the pre-processed data to avoid unnecessary impact of higher units in the result.   
+
+
+## KMEANS Clustering  
+  
+  This clustering method uses Euclidean distance and starts by choosing certain centroids based on number of clusters (K) defined. Hence, the crucial part is choosing the right number of clusters. One of the method to choose K is plotting the WSS (within cluster sum of squares) and determine the elbow-like curve. This means that after the chosen K, WSS value seems to stabilize.   
+  
+```{r elbow}
+#scale complete data
+sd.data <- scale(as.matrix(stack_data_fin)) 
+
+# total within sum of squares
+set.seed(0)
+wss_values<-data.frame()
+wss <- function(k){
+    kmeans(sd.data,k)$tot.withinss
+}
+k.values<-1:10
+wss_values<-map_dbl(k.values, wss)
+plot(k.values, wss_values, type="b", pch=19, frame=FALSE,
+     xlab="Number of clusters K",
+     ylab="Total within-clusters sum of squares")
+
+#fviz_nbclust(sd.data, kmeans, method="wss")
+
+```
+
+  Using the elbow method, we could select 5, 6, or 7. To further decide on the number of clusters to use, we can compare the results of each K for 5,6, and 7. As seen below, outputs are unbalanced clusters where there are only around 1% of respondents in one cluster.
+```{r dis, echo=FALSE}
+for(i in 5:7){
+  set.seed(0)
+  kc.out <- kmeans(sd.data, centers=i, nstart=25)
+  print(paste0("Cluster Number: ",i))
+  cat("Cluster Size: ")
+  print(kc.out$size)
+  # cat("Cluster Centers: ")
+  # print(kc.out$centers)
+  print(paste0("Cluster Within Sum of Squares: ", round(kc.out$tot.withinss)))
+  print(paste0("Cluster Total Sum of Squares: ", round(kc.out$totss)))
+}
+```
+
+  We will use cluster number 7 since it has lowest WSS value. We can plot the graph to visualize the result more. Figure 1 is a plot of the respondents colored based on Kmeans cluster result using K=7. In this graph, Cluster 7 has the high earners. But since this is just a two-dimensional view, it will not show the groupings clearly. Hence, we may opt to do a Principal Component Analysis graph of the output as shown in Figure 2. 
+To visualize the output of the clusters:  
+
+```{r kcplot}
+stack_data_fin$cluster <- kc.out$cluster
+
+#Cluster 2D Visualization
+stack_data_fin %>% 
+  ggplot() +
+  geom_point(mapping = aes(x =YearsCoding, y = ConvertedSalary, colour=factor(cluster))) +
+  labs(color='Cluster', title = "Figure 1. 2D Graph of Kmeans Clustering ") 
+
+#PCA Visualization
+fviz_cluster(kc.out, data=sd.data,main="Figure 2. PCA Visualization")
+
+rm(kc.out)
+```
+  
+  
+  
+    
+  Though performance of Kmeans clustering is faster, we should try other clustering methods for better analysis.   
+  
+  
+  
+## Hierarchical Clustering   
+
+```{r elbow2}
+data.dist=dist(sd.data)
+
+```
+
+First, we'll use Euclidean distance for the dissimilarity measure and look at the three common linkages - complete, single, and average. Since previous elbow method suggests to cut the dendogram at 7 clusters, we'll use that as initial number of clusters. However, as seen below, the number of respondents in a single cluster yields to extreme unbalanced clusters.  
+
+```{r hc}
+hc=hclust(data.dist, method ="complete")
+stack_data_fin["complete"]=list(cutree(hc, 7))
+stack_data_fin %>% group_by(complete) %>% summarise(n=n()) 
+
+hc=hclust(data.dist, method ="average")
+stack_data_fin["average"]=list(cutree(hc, 7))
+stack_data_fin %>% group_by(average) %>% summarise(n=n())
+
+hc=hclust(data.dist, method ="single")
+stack_data_fin["single"]=list(cutree(hc, 7))
+stack_data_fin %>% group_by(single) %>% summarise(n=n())
+
+```
+
+  We'll now use correlation-based distance and see if it can produce more balanced clusters. The clusters produced by the correlation-based distance using complete linkage produced a more desirable result as seen below. We can cut the dendrogram at the height that will yield seven clusters:  
+```{r hcorr}
+
+data.dist=as.dist(1-cor(t(sd.data)))
+hc=hclust(data.dist, method ="complete")
+
+#Number of clusters=5
+hc.clusters=cutree(hc,5)
+stack_data_fin["corr_complete"]=hc.clusters
+stack_data_fin %>% group_by(corr_complete) %>% summarise(n=n())
+#Number of clusters=6
+hc.clusters=cutree(hc,6)
+stack_data_fin["corr_complete"]=hc.clusters
+stack_data_fin %>% group_by(corr_complete) %>% summarise(n=n())
+#Number of clusters=7
+hc.clusters=cutree(hc,7)
+stack_data_fin["corr_complete"]=hc.clusters
+stack_data_fin %>% group_by(corr_complete) %>% summarise(n=n())
+
+```
+  
+  The clusters produced by the correlation-based distance using complete linkage produced more desirable results. We will confirm the ideal number of clusters even further using a dendogram:  
+    
+```{r hclust2}
+
+# dendogram horizontal cut
+par(mfrow =c(1,1))
+plot(hc, main = "Figure 3. Complete Dendogram with Ideal Cut")
+abline (h=1.59, col =" red ")
+
+dend <- as.dendrogram(hc)
+dend2 <- cut(dend, h = 1.59)
+
+plot(dend2$upper, nodePar = list(pch = c(1,7), col = 2:1), center=T, main="Figure 4. Dendogram Focusing the Seven Branches")
+```
+    
+  
+  
+To vizualize the correlation-based distance using complete linkage clusters:  
+  
+```{r ccgraph}
+#Cluster 2D Visualization
+stack_data_fin %>% 
+  ggplot() +
+  geom_point(mapping = aes(x =YearsCoding, y = ConvertedSalary, colour=factor(corr_complete))) +
+  labs(color='corr_complete', title = "Figure 3. 2D Graph of Hierarchical Clustering")
+
+stack_data_fin %>% 
+  ggplot() +
+  geom_point(mapping = aes(x =FormalEducation, y = ConvertedSalary, colour=factor(corr_complete))) +
+  labs(color='corr_complete', title = "Figure 4. 2D Graph of Hierarchical Clustering")
+
+```
+
+
+## Cluster Goals
+
+### Best Method
+  For this study, we will use the correlation-based distance using complete linkage clustering since it focuses on the shapes of observation profiles rather than their magnitudes. We will use seven clusters for our analysis based on the findings above. Also, since this needs only to be run once then the performance of the model is not an issue.  
+
+
+### Description
+Description of each clusters are as follows:
+```{r des, echo=FALSE}
+
+stack_data_fin %>% group_by(corr_complete) %>% 
+  summarise(n=n(), Hobby=mean(Hobby, na.rm=T),
+            OpenSource=mean(OpenSource, na.rm=T),
+            Employment=mean(Employment, na.rm=T),
+            FormalEducation=mean(FormalEducation, na.rm=T),
+            YearsCoding=mean(YearsCoding, na.rm=T),
+            ConvertedSalary=mean(ConvertedSalary, na.rm=T),) %>% 
+  rename(cluster=corr_complete)-> clust_summ
+
+clust_summ %>% round(., 2) %>% knitr::kable()
+```
+
+**The Common Ones** -- The cluster with the most number of respondents is 3 with an average annual salary of `r clust_summ$ConvertedSalary[3]` dollars. Out of all the clusters, they earned the least. All are with formal education but only half are employed. They have an average of 4 years coding experience. 
+
+**The Above Common Ones** -- Cluster 1 are very much alike to the common ones except that they are earning more.
+
+**The Rich Ones** -- The cluster with the least number of respondents is 7 but with the highest average annual salary of `r clust_summ$ConvertedSalary[7]` dollars. Almost all are employed but not all has a formal education.They have an average of 8 years coding experience. 
+
+**The Kind Ones** -- Cluster 2 has similar description like the rich ones but they are earning less. They use open source software less and code as a hobby less.
+ 
+**The Experienced Coders** -- Cluster 6 has the highest years of coding experience of `clust_summ$YearsCoding[6]` on average. Most are employed with formal education and they are the second to the highest earners.
+
+**The Closed Dudes** -- Cluster 4 respondents are all employed with formal education. Though they do not like open source software. 
+
+**The Bonakids** -- CLuster 5 are earning more than the common ones even without a formal education. Most are employed and code as a hobby.
+
+
+### Conclusion
+
+  Almost all coders have used StackOverflow and value the community of sharing and collaborating. Monitoring the users of the website could prevent it from being irrelevant. Furthermore, since it is a free website, ads and other marketing campaigns could use the cluster findings above to target consumers and interested segments efficiently.
